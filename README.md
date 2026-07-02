@@ -19,8 +19,8 @@ python3 -m http.server 8642
 |---|---|
 | ← → or A/D | Run left/right |
 | Space, W, or ↑ | Jump (clears grounded chocolate) |
-| Drag (touch) | Steer Birdie toward your finger |
-| JUMP button (touch) | Jump |
+| Drag / press-hold (touch) | Steer Birdie toward your finger (hold at the screen edge to keep running) |
+| JUMP button or second-finger tap (touch) | Jump |
 | M or 🔊 button | Mute |
 | Space/Enter/tap | Start / restart |
 
@@ -62,6 +62,9 @@ sections (search for the `// ----------` banners):
 5. **Audio** — tiny WebAudio synth. `blip(freq, dur, type, vol, delay, slideTo)`
    plays one oscillator note; the `sfx` object maps named sounds to blip
    combos. No audio files. Created lazily on first user gesture.
+   `unlockAudio()` also plays a looping *silent* `<audio>` element and sets
+   `navigator.audioSession.type = 'playback'` — without this, iOS mutes all
+   WebAudio whenever the phone's ringer switch is on silent.
 6. **Persistence** — leaderboard + high score in `localStorage`.
 7. **Game state** — globals + the `dog` object; state machine is a string:
    `title | playing | dying | entername | gameover`.

@@ -19,6 +19,10 @@
     image-rendering: crisp-edges;
     touch-action: none;
     cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
   }
   #mute {
     position: absolute; right: 8px; bottom: 8px;
@@ -484,8 +488,45 @@ const sfx = {
   over:   () => { blip(523, 0.12, 'triangle', 0.15); blip(659, 0.12, 'triangle', 0.15, 0.12); blip(784, 0.25, 'triangle', 0.15, 0.24); },
 };
 const muteBtn = document.getElementById('mute');
-function toggleMute() { muted = !muted; muteBtn.textContent = muted ? '🔇' : '🔊'; }
+function toggleMute() {
+  muted = !muted;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  if (muted) silentLoop.pause();
+  else if (audioUnlocked) silentLoop.play().catch(() => {});
+}
 muteBtn.addEventListener('click', e => { e.stopPropagation(); toggleMute(); });
+
+// iOS mutes WebAudio while the ringer switch is on silent, unless the page
+// holds a "playback" audio session. A looping silent <audio> forces that.
+function silentWavURI(samples) {
+  const dataSize = samples * 2;
+  const buf = new ArrayBuffer(44 + dataSize);
+  const v = new DataView(buf);
+  const wr = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+  wr(0, 'RIFF'); v.setUint32(4, 36 + dataSize, true); wr(8, 'WAVE');
+  wr(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 44100, true); v.setUint32(28, 88200, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  wr(36, 'data'); v.setUint32(40, dataSize, true);
+  let bin = '';
+  new Uint8Array(buf).forEach(b => { bin += String.fromCharCode(b); });
+  return 'data:audio/wav;base64,' + btoa(bin);
+}
+const silentLoop = new Audio(silentWavURI(8820)); // 0.2s of silence
+silentLoop.loop = true;
+silentLoop.setAttribute('playsinline', '');
+let audioUnlocked = false;
+function unlockAudio() {
+  if (!audioUnlocked) {
+    audioUnlocked = true;
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+  }
+  if (!muted && silentLoop.paused) silentLoop.play().catch(() => {});
+  ac();
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) silentLoop.pause();
+  else if (audioUnlocked && !muted) silentLoop.play().catch(() => {});
+});
 
 // ---------- persistent scores ----------
 let board = [];
@@ -530,11 +571,12 @@ function multiplier() { return Math.min(1 + Math.floor(combo / 5), 5); }
 
 // ---------- input ----------
 const keys = {};
-let touchTargetX = null, dragging = false;
+let dragPointerId = null, dragScreenX = null;
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
 window.addEventListener('keydown', e => {
   if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) e.preventDefault();
+  unlockAudio();
   keys[e.key.toLowerCase()] = true;
   if (e.key.toLowerCase() === 'm' && !e.repeat) { toggleMute(); return; }
   if (state === 'entername') { nameKey(e); return; }
@@ -578,14 +620,18 @@ function jump() {
 }
 cv.addEventListener('pointerdown', e => {
   e.preventDefault();
-  ac(); // unlock audio on first gesture
+  unlockAudio(); // must happen inside a user gesture
   const p = canvasPt(e);
   if (state === 'playing') {
     if (p.x > JUMP_BTN.x && p.x < JUMP_BTN.x + JUMP_BTN.w && p.y > JUMP_BTN.y && p.y < JUMP_BTN.y + JUMP_BTN.h) {
       jump();
       return;
     }
-    dragging = true; touchTargetX = p.x + camX; return;
+    if (dragPointerId !== null && e.pointerId !== dragPointerId) { jump(); return; } // second finger = jump
+    dragPointerId = e.pointerId;
+    dragScreenX = p.x;
+    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+    return;
   }
   if (state === 'entername') {
     for (let i = 0; i < 3; i++) {
@@ -602,9 +648,11 @@ cv.addEventListener('pointerdown', e => {
   }
   tryStart();
 });
-cv.addEventListener('pointermove', e => { if (dragging) touchTargetX = canvasPt(e).x + camX; });
-cv.addEventListener('pointerup', () => { dragging = false; touchTargetX = null; });
-cv.addEventListener('pointercancel', () => { dragging = false; touchTargetX = null; });
+cv.addEventListener('pointermove', e => { if (e.pointerId === dragPointerId) dragScreenX = canvasPt(e).x; });
+function endDrag(e) { if (e.pointerId === dragPointerId) { dragPointerId = null; dragScreenX = null; } }
+cv.addEventListener('pointerup', endDrag);
+cv.addEventListener('pointercancel', endDrag);
+cv.addEventListener('contextmenu', e => e.preventDefault());
 
 function tryStart() {
   if (state === 'playing' || state === 'dying' || state === 'entername') return;
@@ -775,8 +823,11 @@ function update(dt) {
   const maxSp = zoomies ? 660 : 420;
   const accel = zoomies ? 3800 : 2400;
   const left = keys['arrowleft'] || keys['a'], right = keys['arrowright'] || keys['d'];
-  if (touchTargetX !== null) {
-    dog.vx = Math.max(-maxSp - 40, Math.min(maxSp + 40, (touchTargetX - dog.x) * 10));
+  if (dragScreenX !== null) {
+    // finger position is screen-space; re-derive the world target every
+    // frame so holding at the edge keeps running as the camera scrolls
+    const dx = dragScreenX + camX - dog.x;
+    dog.vx = Math.abs(dx) < 8 ? 0 : Math.max(-maxSp - 40, Math.min(maxSp + 40, dx * 10));
   } else {
     const dir = (right ? 1 : 0) - (left ? 1 : 0);
     if (dir !== 0) dog.vx += dir * accel * dt;
