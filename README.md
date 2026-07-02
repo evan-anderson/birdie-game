@@ -5,6 +5,8 @@ through pixel-art Cambridge, UK, catching falling food. Built as a **single
 self-contained `index.html`** — no dependencies, no build step, no assets.
 Open it in any browser, or serve it and share the URL.
 
+**▶ Play it now: https://evan-anderson.github.io/birdie-game/**
+
 ```bash
 # run locally
 python3 -m http.server 8642
