@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Birdie's Watermelon Feast</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0d1420;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    font-family: "Courier New", monospace;
+  }
+  #wrap { position: relative; line-height: 0; }
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    touch-action: none;
+    cursor: pointer;
+  }
+  #mute {
+    position: absolute; right: 8px; bottom: 8px;
+    width: 40px; height: 40px; font-size: 20px; line-height: 1;
+    background: rgba(15,23,32,.6); color: #fff;
+    border: 2px solid rgba(255,255,255,.35); border-radius: 8px;
+    cursor: pointer; z-index: 2;
+  }
+  #mute:hover { background: rgba(15,23,32,.85); }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="480" height="640"></canvas>
+  <button id="mute" title="Mute (M)">🔊</button>
+</div>
+<script>
+'use strict';
+const W = 480, H = 640, WORLD_W = 1920, GROUND_Y = 612, DURATION = 60;
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+// ---------- responsive scaling ----------
+function fit() {
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  cv.style.width = Math.floor(W * s) + 'px';
+  cv.style.height = Math.floor(H * s) + 'px';
+}
+window.addEventListener('resize', fit);
+fit();
+
+// ---------- pixel sprite builder ----------
+function makeSprite(rows, palette, scale) {
+  const c = document.createElement('canvas');
+  c.width = rows[0].length * scale;
+  c.height = rows.length * scale;
+  const g = c.getContext('2d');
+  rows.forEach((row, y) => {
+    for (let x = 0; x < row.length; x++) {
+      const col = palette[row[x]];
+      if (col) { g.fillStyle = col; g.fillRect(x * scale, y * scale, scale, scale); }
+    }
+  });
+  return c;
+}
+
+// Birdie: apricot-cream curly poodle x irish setter, facing right
+const DOG_PAL = {
+  r: '#d4a474', // apricot-cream coat
+  d: '#aa7648', // darker apricot: ears, shading, far legs
+  l: '#ecca9e', // pale cream curls
+  k: '#2a1d16', // eye / nose
+  p: '#e8697d', // tongue
+  c: '#c93a3a', // red collar
+};
+const DOG_A = [
+  '.................lrl....',
+  '................rlrrl...',
+  '.rl............rrrrrrr..',
+  'rrlr...........ddrrkrr..',
+  '.rlr...........ddrrrrrrk',
+  '..rl...........ddrrrrrd.',
+  '...rrrrrrrrrrrrddcccc...',
+  '...rlrrrlrrrrlrdd.......',
+  '...rrrlrrrlrrrlrr.......',
+  '...lrrrlrrrlrrrlr.......',
+  '....rdrrrrrrdrrr........',
+  '....rr.dd..dd.rr........',
+  '....rr.dd..dd.rr........',
+  '....rr........rr........',
+  '....rr........rr........',
+  '....ddd.......ddd.......',
+];
+const DOG_B = DOG_A.slice(0, 11).concat([
+  '....rr.dd..dd.rr........',
+  '...rr..dd..dd..rr.......',
+  '..rr...........rr.......',
+  '..rr............rr......',
+  '..dd............dd......',
+]);
+const DOG_CHOMP = DOG_A.slice();
+DOG_CHOMP[5] = '..rl...........ddrrrrrkp';
+const DOG_CHEW = DOG_A.slice();      // cheeks puffed mid-chew
+DOG_CHEW[4] = '.rlr...........ddrrrlrrk';
+DOG_CHEW[5] = '..rl...........ddrrllld.';
+
+const sprDogA = makeSprite(DOG_A, DOG_PAL, 4);
+const sprDogB = makeSprite(DOG_B, DOG_PAL, 4);
+const sprDogChomp = makeSprite(DOG_CHOMP, DOG_PAL, 4);
+const sprDogChew = makeSprite(DOG_CHEW, DOG_PAL, 4);
+// brighter version for the title screen, where the dark overlay dulls colors
+const sprDogTitle = makeSprite(DOG_A, {
+  ...DOG_PAL, r: '#e8c69c', d: '#c29260', l: '#f7e4c2',
+}, 4);
+
+// Watermelon slice
+const MELON_ROWS = [
+  '.ppppppppp.',
+  'pppsppspppp',
+  'ppsppppsppp',
+  'ppppppppppp',
+  'wwwwwwwwwww',
+  'ggggggggggg',
+  '.gGggGggGg.',
+  '..ggggggg..',
+  '....ggg....',
+];
+const sprMelon = makeSprite(MELON_ROWS,
+  { p: '#ff5f6d', s: '#26221c', w: '#f7efc8', g: '#37b24d', G: '#2b8a3e' }, 4);
+// legendary golden watermelon
+const sprGold = makeSprite(MELON_ROWS,
+  { p: '#ffd43b', s: '#8a6d00', w: '#fff3bf', g: '#e8b70f', G: '#c99b06' }, 4);
+
+// Kibble
+const sprKibble = makeSprite([
+  '.bbbbb.',
+  'bbBbbbb',
+  'bbbbBbb',
+  'bBbbbbb',
+  '.bbbbb.',
+], { b: '#8a5a2b', B: '#6b421c' }, 3);
+
+// Bone biscuit
+const sprBone = makeSprite([
+  'tt.........tt',
+  'ttt.......ttt',
+  'ttttttttttttt',
+  '.tttTTTTTttt.',
+  'ttttttttttttt',
+  'ttt.......ttt',
+  'tt.........tt',
+], { t: '#e0b471', T: '#c1934e' }, 3);
+
+// Chocolate bar in a purple (very Cadbury) wrapper
+const sprChoc = makeSprite([
+  'cccccccccc',
+  'ccCccCccCc',
+  'cccccccccc',
+  'ccCccCccCc',
+  'cccccccccc',
+  'vvvvvvvvvv',
+  'vvvvvvvvvv',
+  'vwwwwwwwwv',
+  'vwwwwwwwwv',
+  'vvvvvvvvvv',
+  'vVvvvvvvVv',
+  'vvvvvvvvvv',
+], { c: '#5d3a1a', C: '#3f2610', v: '#7048e8', V: '#5230b3', w: '#f4f0fa' }, 3);
+
+// cheeky Cambridge pigeon, two flap frames, facing right
+const PIGEON_PAL = { g: '#9aa2ad', d: '#6f7783', o: '#e8a33d', i: '#4f8f6b' };
+const sprPigeonA = makeSprite([
+  '....gg......',
+  '...gggg.....',
+  '....gg..dd..',
+  'd..ggggddddo',
+  'dd.ggggggid.',
+  '.dgggggggg..',
+  '..ggggggg...',
+  '....g..g....',
+], PIGEON_PAL, 3);
+const sprPigeonB = makeSprite([
+  '............',
+  '............',
+  '........dd..',
+  'd..ggggddddo',
+  'dd.ggggggid.',
+  '.dgggggggg..',
+  '..gggggg....',
+  '...dddd.....',
+], PIGEON_PAL, 3);
+
+// a cow for Parker's Piece
+const sprCow = makeSprite([
+  '.ccccccccccc....',
+  '.cbbcccccbcc....',
+  '.cbbccccccccc...',
+  '.ccccccccccbcc..',
+  '.ccccccccccccc..',
+  '..cc...cc..ccc..',
+  '..cc...cc...bc..',
+  '..bb...bb...cp..',
+], { c: '#f2efe9', b: '#2b2622', p: '#d9848f' }, 3);
+
+const ITEM_TYPES = {
+  kibble: { pts: 10,  spr: sprKibble, color: '#d9a066', meter: 0.06 },
+  treat:  { pts: 25,  spr: sprBone,   color: '#e6c07a', meter: 0.12 },
+  melon:  { pts: 100, spr: sprMelon,  color: '#ff5f6d', meter: 0.30 },
+  gold:   { pts: 250, spr: sprGold,   color: '#ffd43b', meter: 1.00 },
+  choc:   { pts: 0,   spr: sprChoc,   color: '#7048e8', meter: 0 },
+};
+
+// ---------- the Cambridge world (1920px wide, painted once) ----------
+const bgCanvas = document.createElement('canvas');
+bgCanvas.width = WORLD_W; bgCanvas.height = H;
+(function paintWorld() {
+  const g = bgCanvas.getContext('2d');
+  const stone = '#cbb994', stoneD = '#b3a176', stoneL = '#e2d4ae', win = '#3d4a63';
+
+  // soft English sky bands
+  const skyBands = ['#6fa8d0', '#7fb4d9', '#90c0e0', '#a5cde7', '#bcd9ee', '#d5e6f2'];
+  skyBands.forEach((c, i) => { g.fillStyle = c; g.fillRect(0, i * 50, WORLD_W, 50); });
+  // hazy sun over Parker's Piece
+  g.fillStyle = 'rgba(246,240,216,0.55)';
+  g.beginPath(); g.arc(1650, 62, 32, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#f6f0d8';
+  g.beginPath(); g.arc(1650, 62, 20, 0, Math.PI * 2); g.fill();
+
+  // distant trees all along the horizon
+  g.fillStyle = '#3c6b35';
+  [[25, 278, 16], [130, 275, 18], [365, 268, 22], [412, 260, 27], [455, 268, 21],
+   [760, 272, 20], [935, 266, 24], [1180, 274, 17], [1440, 262, 26], [1500, 270, 20],
+   [1560, 265, 24], [1740, 268, 22], [1800, 262, 25], [1905, 270, 22]
+  ].forEach(([x, y, r]) => { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); });
+
+  // === ZONE A (0-480): The Backs ===
+  // Great St Mary's-ish clock tower
+  g.fillStyle = '#bfa87e'; g.fillRect(58, 185, 52, 115);
+  g.fillStyle = '#a89060';
+  for (let x = 58; x < 110; x += 10) g.fillRect(x, 177, 6, 8);
+  g.fillRect(56, 172, 6, 13); g.fillRect(106, 172, 6, 13);
+  g.fillStyle = '#d8b74a'; g.beginPath(); g.arc(84, 215, 10, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#f4e9c8'; g.beginPath(); g.arc(84, 215, 7, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#3a3020'; g.fillRect(83, 209, 2, 7); g.fillRect(83, 214, 5, 2);
+  g.fillStyle = win; g.fillRect(70, 245, 8, 26); g.fillRect(90, 245, 8, 26);
+
+  // King's College Chapel
+  g.fillStyle = stone; g.fillRect(146, 200, 190, 100);
+  g.fillStyle = stoneL;
+  [146, 324].forEach(x => {
+    g.fillRect(x, 155, 12, 145);
+    g.fillRect(x + 2, 146, 8, 9);
+    g.fillRect(x + 4, 138, 4, 8);
+    g.fillRect(x + 5, 130, 2, 8);
+  });
+  g.fillStyle = stoneD;
+  for (let x = 162; x < 324; x += 12) g.fillRect(x, 192, 6, 8);
+  g.fillRect(158, 198, 166, 4);
+  g.fillStyle = win;
+  g.fillRect(236, 216, 10, 6); g.fillRect(226, 222, 30, 6); g.fillRect(216, 228, 50, 6);
+  g.fillRect(212, 234, 58, 58);
+  g.fillStyle = stoneD;
+  for (let x = 220; x < 268; x += 10) g.fillRect(x, 238, 2, 54);
+  g.fillRect(214, 262, 54, 2);
+  g.fillStyle = win; g.fillRect(172, 244, 14, 48); g.fillRect(296, 244, 14, 48);
+  g.fillStyle = stoneD; g.fillRect(166, 212, 3, 88); g.fillRect(194, 212, 3, 88); g.fillRect(286, 212, 3, 88); g.fillRect(314, 212, 3, 88);
+
+  // college wall + gate
+  g.fillStyle = '#c2ad82'; g.fillRect(340, 268, 150, 32);
+  g.fillStyle = '#a89060';
+  for (let x = 342; x < 490; x += 12) g.fillRect(x, 262, 6, 6);
+  g.fillStyle = '#4a3a28'; g.fillRect(398, 276, 24, 24);
+  g.fillStyle = '#c2ad82'; g.fillRect(398, 276, 24, 6);
+
+  // === ZONE B (480-960): Queens' & the Mathematical Bridge ===
+  // red-brick Tudor court
+  g.fillStyle = '#9e5b40'; g.fillRect(520, 222, 180, 78);
+  g.fillStyle = '#7d4732';
+  for (let y = 226; y < 296; y += 8) for (let x = 524 + ((y / 8) % 2) * 6; x < 692; x += 14) g.fillRect(x, y, 7, 3);
+  g.fillStyle = '#e9e2d2'; // white sash windows
+  for (let x = 534; x < 690; x += 32) { g.fillRect(x, 236, 16, 20); g.fillRect(x, 266, 16, 20); }
+  g.fillStyle = '#6b5240';
+  for (let x = 534; x < 690; x += 32) { g.fillRect(x + 7, 236, 2, 20); g.fillRect(x + 7, 266, 2, 20); g.fillRect(x, 245, 16, 2); g.fillRect(x, 275, 16, 2); }
+  g.fillStyle = '#7d4732';
+  for (let x = 520; x < 700; x += 20) g.fillRect(x, 214, 10, 8); // chimney-ish parapet
+  // half-timber gable
+  g.fillStyle = '#e9e2d2'; g.fillRect(590, 190, 60, 32);
+  g.fillStyle = '#5a4632'; g.fillRect(588, 186, 64, 6);
+  g.fillRect(598, 190, 4, 32); g.fillRect(618, 190, 4, 32); g.fillRect(638, 190, 4, 32);
+
+  // === ZONE C (960-1440): King's Parade & the market ===
+  // Senate House: cream classical
+  g.fillStyle = '#e6ddc4'; g.fillRect(980, 215, 170, 85);
+  g.fillStyle = '#d3c8a8';
+  for (let x = 992; x < 1146; x += 22) g.fillRect(x, 222, 8, 72); // pilasters
+  g.fillStyle = '#efe8d4';
+  for (let x = 982; x < 1150; x += 14) g.fillRect(x, 206, 8, 9); // balustrade
+  g.fillStyle = '#e6ddc4'; // pediment
+  g.fillRect(1035, 198, 60, 10); g.fillRect(1047, 190, 36, 10); g.fillRect(1059, 184, 12, 8);
+  // Corpus Clock: gold disc + Chronophage
+  g.fillStyle = '#d8b74a'; g.beginPath(); g.arc(1168, 272, 12, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#f1dd9a'; g.beginPath(); g.arc(1168, 272, 8, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#3a3020'; g.fillRect(1162, 256, 12, 6); // the grasshopper of doom
+  g.fillRect(1158, 254, 4, 3); g.fillRect(1174, 254, 4, 3);
+
+  // market stalls
+  function stall(x, c1) {
+    g.fillStyle = '#6b5240'; g.fillRect(x + 2, 252, 4, 48); g.fillRect(x + 54, 252, 4, 48);
+    for (let i = 0; i < 8; i++) { g.fillStyle = i % 2 ? '#f2ead6' : c1; g.fillRect(x + i * 8 - 2, 240, 8, 14); }
+    g.fillStyle = '#8a6136'; g.fillRect(x, 272, 60, 8);
+    for (let i = 0; i < 6; i++) {
+      g.fillStyle = ['#e8a33d', '#c94f4f', '#57984a'][i % 3];
+      g.fillRect(x + 4 + i * 9, 264, 7, 7);
+    }
+    g.fillStyle = '#6b5240'; g.fillRect(x, 280, 60, 3);
+  }
+  stall(1200, '#c94f4f');
+  stall(1272, '#3e7f4f');
+
+  // red phone box
+  g.fillStyle = '#c0392b'; g.fillRect(1352, 252, 22, 48);
+  g.fillStyle = '#8f2418'; g.fillRect(1350, 248, 26, 6);
+  g.fillStyle = '#f2ead6'; g.fillRect(1355, 256, 16, 5);
+  g.fillStyle = '#9fb6c4'; g.fillRect(1355, 264, 16, 26);
+  g.fillStyle = '#c0392b'; g.fillRect(1360, 264, 2, 26); g.fillRect(1367, 264, 2, 26); g.fillRect(1355, 272, 16, 2) ; g.fillRect(1355, 280, 16, 2);
+  // pillar post box
+  g.fillStyle = '#c0392b'; g.fillRect(1404, 262, 12, 38);
+  g.fillStyle = '#8f2418'; g.fillRect(1402, 258, 16, 6);
+  g.fillStyle = '#2b2622'; g.fillRect(1406, 270, 8, 3);
+
+  // === ZONE D (1440-1920): Parker's Piece ===
+  // University Library tower, brooding on the horizon
+  g.fillStyle = '#7d5238'; g.fillRect(1830, 170, 56, 130);
+  g.fillStyle = '#6b452f'; g.fillRect(1838, 160, 40, 10); g.fillRect(1846, 152, 24, 8);
+  g.fillStyle = '#4a3a30';
+  for (let y = 185; y < 290; y += 18) { g.fillRect(1840, y, 6, 12); g.fillRect(1855, y, 6, 12); g.fillRect(1870, y, 6, 12); }
+
+  // college lawns with mowing stripes (zones A-C)
+  for (let y = 300; y < 390; y += 18) {
+    g.fillStyle = ((y / 18) % 2 < 1) ? '#5aa64b' : '#529c44';
+    g.fillRect(0, y, 1450, 18);
+  }
+  // KEEP OFF THE GRASS
+  g.fillStyle = '#8a6136'; g.fillRect(129, 342, 4, 16);
+  g.fillStyle = '#f2ead6'; g.fillRect(116, 328, 30, 14);
+  g.fillStyle = '#7b8794'; g.fillRect(120, 332, 22, 3); g.fillRect(120, 337, 17, 3);
+
+  // the River Cam (ends at Parker's Piece)
+  g.fillStyle = '#5b7f9e'; g.fillRect(0, 390, 1450, 60);
+  g.fillStyle = '#7396b3';
+  for (let i = 0; i < 80; i++) {
+    const x = (i * 71) % 1430, y = 398 + ((i * 37) % 44);
+    g.fillRect(x, y, 12, 2);
+  }
+
+  // Mathematical Bridge over the Cam
+  g.fillStyle = '#8a6136';
+  g.fillRect(700, 384, 16, 66); g.fillRect(844, 384, 16, 66); // abutments
+  for (let i = 0; i < 8; i++) { // gently arched deck
+    const bx = 712 + i * 17, by = 384 - Math.round(Math.sin((i + 0.5) / 8 * Math.PI) * 10);
+    g.fillRect(bx, by, 18, 6);
+    g.fillRect(bx, by - 18, 3, 18); // rail posts
+  }
+  g.strokeStyle = '#6e4a28'; g.lineWidth = 2; // the famous tangent trusses
+  g.beginPath();
+  for (let i = 0; i < 7; i++) {
+    const bx = 715 + i * 17, by = 384 - Math.round(Math.sin((i + 0.5) / 8 * Math.PI) * 10);
+    g.moveTo(bx, by - 16); g.lineTo(bx + 20, by);
+    g.moveTo(bx + 20, by - 16); g.lineTo(bx, by);
+  }
+  g.stroke();
+  g.fillStyle = '#8a6136'; // handrail
+  for (let i = 0; i < 8; i++) {
+    const bx = 712 + i * 17, by = 384 - Math.round(Math.sin((i + 0.5) / 8 * Math.PI) * 10);
+    g.fillRect(bx, by - 20, 18, 4);
+  }
+
+  // Parker's Piece: one huge unbroken green
+  g.fillStyle = '#57a04a'; g.fillRect(1440, 300, 480, 172);
+  g.fillStyle = '#4f9443';
+  for (let y = 300; y < 472; y += 24) g.fillRect(1440, y, 480, 12);
+  g.fillStyle = '#4c8a3f'; g.fillRect(1435, 390, 15, 60); // river bank cap
+  // grazing cows
+  g.drawImage(sprCow, 1520, 402);
+  g.save(); g.translate(1700 + sprCow.width, 424); g.scale(-1, 1); g.drawImage(sprCow, 0, 0); g.restore();
+  g.drawImage(sprCow, 1780, 396);
+  // stray football
+  g.fillStyle = '#f2efe9'; g.beginPath(); g.arc(1610, 462, 6, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#2b2622'; g.fillRect(1608, 460, 4, 4);
+  // Reality Checkpoint: the great green lamppost
+  g.fillStyle = '#3e5f43';
+  g.fillRect(1656, 316, 7, 146); g.fillRect(1648, 456, 23, 8);
+  g.fillRect(1642, 336, 35, 5); // crossbar
+  g.fillStyle = '#d8b74a'; g.fillRect(1656, 328, 7, 4); g.fillRect(1656, 344, 7, 4);
+  g.fillStyle = '#22262b'; g.fillRect(1650, 296, 19, 22); g.fillRect(1654, 288, 11, 10); g.fillRect(1658, 283, 3, 6);
+  g.fillStyle = '#ffd873'; g.fillRect(1653, 300, 13, 14);
+
+  // weeping willows along the banks
+  function willow(wx) {
+    g.fillStyle = '#6b4a2e'; g.fillRect(wx + 38, 330, 12, 130);
+    g.fillStyle = '#57984a';
+    g.beginPath(); g.arc(wx + 44, 296, 42, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(wx + 14, 312, 30, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(wx + 78, 314, 28, 0, Math.PI * 2); g.fill();
+    const greens = ['#5da24e', '#4c8a3f', '#6fb35e'];
+    for (let i = 0; i < 14; i++) {
+      g.fillStyle = greens[i % 3];
+      g.fillRect(wx + 2 + i * 7, 300 + (i % 4) * 8, 4, 80 + ((i * 13) % 40));
+    }
+  }
+  willow(0);
+  willow(880);
+
+  // cobbled towpath: the play area, end to end
+  g.fillStyle = '#4c8a3f'; g.fillRect(0, 450, 1450, 22);
+  g.fillStyle = '#57a04a'; g.fillRect(1440, 450, 480, 22);
+  g.fillStyle = '#6f7480'; g.fillRect(0, 472, WORLD_W, H - 472);
+  for (let row = 0; row < 14; row++) {
+    const y = 474 + row * 12;
+    const off = (row % 2) * 11;
+    for (let i = 0; i * 22 - 11 < WORLD_W; i++) {
+      g.fillStyle = ((i + row) % 3 === 0) ? '#8d929e' : '#848996';
+      g.fillRect(i * 22 - 11 + off, y, 18, 9);
+    }
+  }
+
+  // Victorian lamppost + bicycle (zone A end)
+  g.fillStyle = '#22262b';
+  g.fillRect(426, 340, 5, 122);
+  g.fillRect(422, 458, 13, 6);
+  g.fillRect(419, 326, 19, 16);
+  g.fillRect(423, 318, 11, 8); g.fillRect(427, 313, 3, 5);
+  g.fillStyle = '#ffd873'; g.fillRect(422, 329, 13, 10);
+  g.strokeStyle = '#2c2f33'; g.lineWidth = 2.5;
+  g.beginPath(); g.arc(390, 452, 11, 0, Math.PI * 2); g.stroke();
+  g.beginPath(); g.arc(414, 452, 11, 0, Math.PI * 2); g.stroke();
+  g.strokeStyle = '#a33b3b'; g.lineWidth = 2.5;
+  g.beginPath();
+  g.moveTo(390, 452); g.lineTo(400, 437); g.lineTo(414, 452);
+  g.moveTo(400, 437); g.lineTo(394, 436);
+  g.moveTo(400, 437); g.lineTo(411, 435);
+  g.stroke();
+  g.fillStyle = '#2c2f33'; g.fillRect(391, 433, 6, 3); g.fillRect(409, 432, 6, 3);
+  g.fillStyle = '#c99e56'; g.fillRect(415, 434, 10, 8);
+})();
+
+// ---------- audio (tiny WebAudio synth, no assets) ----------
+let audioCtx = null, muted = false;
+function ac() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+function blip(freq, dur = 0.09, type = 'square', vol = 0.12, delay = 0, slideTo = null) {
+  if (muted) return;
+  try {
+    const a = ac(), o = a.createOscillator(), gn = a.createGain();
+    const t = a.currentTime + delay;
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+    gn.gain.setValueAtTime(vol, t);
+    gn.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(gn).connect(a.destination);
+    o.start(t); o.stop(t + dur + 0.02);
+  } catch (e) { /* audio unavailable */ }
+}
+const sfx = {
+  kibble: () => blip(520, 0.07),
+  treat:  () => { blip(660, 0.07); blip(880, 0.08, 'square', 0.12, 0.06); },
+  melon:  () => { blip(660, 0.08); blip(880, 0.08, 'square', 0.12, 0.07); blip(1174, 0.14, 'square', 0.14, 0.14); },
+  gold:   () => { blip(880, 0.08); blip(1174, 0.08, 'square', 0.13, 0.08); blip(1568, 0.1, 'square', 0.14, 0.16); blip(2093, 0.2, 'square', 0.14, 0.26); },
+  chew:   () => blip(190 + Math.random() * 40, 0.04, 'square', 0.06),
+  choc:   () => blip(320, 0.7, 'sawtooth', 0.18, 0, 70),
+  combo:  m => blip(500 + m * 120, 0.12, 'triangle', 0.14),
+  lost:   () => blip(300, 0.2, 'triangle', 0.1, 0, 150),
+  steal:  () => { blip(700, 0.12, 'triangle', 0.12, 0, 420); blip(560, 0.1, 'triangle', 0.1, 0.12, 380); },
+  zoom:   () => blip(200, 0.45, 'sawtooth', 0.14, 0, 950),
+  jump:   () => blip(300, 0.14, 'square', 0.1, 0, 620),
+  land:   () => blip(160, 0.06, 'square', 0.07),
+  tick:   () => blip(880, 0.05, 'square', 0.08),
+  start:  () => { blip(440, 0.08); blip(660, 0.1, 'square', 0.12, 0.09); },
+  over:   () => { blip(523, 0.12, 'triangle', 0.15); blip(659, 0.12, 'triangle', 0.15, 0.12); blip(784, 0.25, 'triangle', 0.15, 0.24); },
+};
+const muteBtn = document.getElementById('mute');
+function toggleMute() { muted = !muted; muteBtn.textContent = muted ? '🔇' : '🔊'; }
+muteBtn.addEventListener('click', e => { e.stopPropagation(); toggleMute(); });
+
+// ---------- persistent scores ----------
+let board = [];
+try { board = JSON.parse(localStorage.getItem('birdie-leaderboard') || '[]'); } catch (e) {}
+let highScore = board.length ? board[0].score : 0;
+try { highScore = Math.max(highScore, parseInt(localStorage.getItem('birdie-highscore') || '0', 10) || 0); } catch (e) {}
+function saveBoard() {
+  try {
+    localStorage.setItem('birdie-leaderboard', JSON.stringify(board));
+    localStorage.setItem('birdie-highscore', String(highScore));
+  } catch (e) {}
+}
+
+// ---------- game state ----------
+let state = 'title'; // title | playing | dying | entername | gameover
+let elapsed = 0, score = 0, spawnTimer = 0, dyingT = 0, overCooldown = 0;
+let gameOverReason = 'time', newEntryIdx = -1;
+let combo = 0, meter = 0, zoomies = 0, lastTickSec = 99;
+let goldTimes = [], goldIdx = 0;
+let items = [], popups = [], particles = [], pigeons = [], eatFx = [];
+let pigeonTimer = 6;
+let announceMsg = '', announceT = 0;
+let entryName = ['B', 'R', 'D'], entrySlot = 0;
+let camX = 0;
+let ambientT = 0;
+
+const dog = { x: 240, vx: 0, facing: 1, animT: 0, eatT: 0, eatColor: '#fff', hopY: 0, hopV: 0 };
+const punts = [
+  { x: 180, dir: 1, min: 120, max: 560 },
+  { x: 1000, dir: -1, min: 900, max: 1250 },
+];
+const ducks = [
+  { x: 300, y: 428, dir: -1, sp: 9 }, { x: 60, y: 442, dir: 1, sp: 12 },
+  { x: 980, y: 434, dir: 1, sp: 10 },
+];
+const clouds = [
+  { x: 40, y: 40, s: 1.3 }, { x: 420, y: 88, s: 0.9 }, { x: 780, y: 30, s: 1.1 },
+  { x: 1200, y: 70, s: 1.2 }, { x: 1620, y: 44, s: 0.8 },
+];
+
+function multiplier() { return Math.min(1 + Math.floor(combo / 5), 5); }
+
+// ---------- input ----------
+const keys = {};
+let touchTargetX = null, dragging = false;
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+window.addEventListener('keydown', e => {
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) e.preventDefault();
+  keys[e.key.toLowerCase()] = true;
+  if (e.key.toLowerCase() === 'm' && !e.repeat) { toggleMute(); return; }
+  if (state === 'entername') { nameKey(e); return; }
+  if (state === 'playing') {
+    if ([' ', 'w', 'arrowup'].includes(e.key.toLowerCase()) && !e.repeat) jump();
+    return;
+  }
+  if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) tryStart();
+});
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+function nameKey(e) {
+  if (/^[a-z]$/i.test(e.key)) {
+    entryName[entrySlot] = e.key.toUpperCase();
+    entrySlot = Math.min(entrySlot + 1, 2);
+  } else if (e.key === 'Backspace' || e.key === 'ArrowLeft') {
+    entrySlot = Math.max(entrySlot - 1, 0);
+  } else if (e.key === 'ArrowRight') {
+    entrySlot = Math.min(entrySlot + 1, 2);
+  } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    const d = e.key === 'ArrowUp' ? -1 : 1;
+    const i = LETTERS.indexOf(entryName[entrySlot]);
+    entryName[entrySlot] = LETTERS[(i + d + 26) % 26];
+  } else if (e.key === 'Enter') confirmName();
+}
+
+function canvasPt(e) {
+  const r = cv.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) / r.width * W,
+    y: (e.clientY - r.top) / r.height * H,
+  };
+}
+function nameSlotX(i) { return W / 2 - 80 + i * 80; }
+const JUMP_BTN = { x: 12, y: H - 66, w: 92, h: 52 };
+function jump() {
+  if (state !== 'playing' || dog.hopY < 0) return;
+  dog.hopV = -480;
+  addBurst(dog.x, GROUND_Y - 4, '#9aa0ab', 5);
+  sfx.jump();
+}
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  ac(); // unlock audio on first gesture
+  const p = canvasPt(e);
+  if (state === 'playing') {
+    if (p.x > JUMP_BTN.x && p.x < JUMP_BTN.x + JUMP_BTN.w && p.y > JUMP_BTN.y && p.y < JUMP_BTN.y + JUMP_BTN.h) {
+      jump();
+      return;
+    }
+    dragging = true; touchTargetX = p.x + camX; return;
+  }
+  if (state === 'entername') {
+    for (let i = 0; i < 3; i++) {
+      const sx = nameSlotX(i);
+      if (p.x > sx - 32 && p.x < sx + 32) {
+        entrySlot = i;
+        const li = LETTERS.indexOf(entryName[i]);
+        if (p.y > 210 && p.y < 262) entryName[i] = LETTERS[(li + 25) % 26];
+        if (p.y > 336 && p.y < 388) entryName[i] = LETTERS[(li + 1) % 26];
+      }
+    }
+    if (p.x > W / 2 - 80 && p.x < W / 2 + 80 && p.y > 420 && p.y < 474) confirmName();
+    return;
+  }
+  tryStart();
+});
+cv.addEventListener('pointermove', e => { if (dragging) touchTargetX = canvasPt(e).x + camX; });
+cv.addEventListener('pointerup', () => { dragging = false; touchTargetX = null; });
+cv.addEventListener('pointercancel', () => { dragging = false; touchTargetX = null; });
+
+function tryStart() {
+  if (state === 'playing' || state === 'dying' || state === 'entername') return;
+  if (state === 'gameover' && overCooldown > 0) return;
+  state = 'playing';
+  elapsed = 0; score = 0; spawnTimer = 0.4;
+  combo = 0; meter = 0; zoomies = 0; lastTickSec = 99;
+  items = []; popups = []; particles = []; pigeons = []; eatFx = [];
+  pigeonTimer = 5 + Math.random() * 4;
+  goldTimes = [16 + Math.random() * 8, 36 + Math.random() * 10];
+  goldIdx = 0;
+  announceMsg = ''; announceT = 0;
+  dog.x = 240; dog.vx = 0; dog.eatT = 0; dog.hopY = 0; dog.hopV = 0;
+  camX = 0;
+  sfx.start();
+}
+
+// ---------- spawning ----------
+function spawnItem(type, x, vy) {
+  const spr = ITEM_TYPES[type].spr;
+  items.push({
+    type, x, vy,
+    y: -spr.height,
+    sway: Math.random() * Math.PI * 2,
+    grounded: false, groundT: 0,
+  });
+}
+function spawnRandomItem() {
+  const t = Math.min(elapsed / DURATION, 1);
+  const roll = Math.random();
+  const chocP = elapsed < 5 ? 0 : 0.06 + 0.08 * t;
+  let type;
+  if (roll < chocP) type = 'choc';
+  else if (roll < chocP + 0.10) type = 'melon';
+  else if (roll < chocP + 0.10 + 0.24) type = 'treat';
+  else type = 'kibble';
+  const spread = type === 'melon' ? 620 : 420; // melons tempt you to run
+  const x = Math.max(28, Math.min(WORLD_W - 28, dog.x + (Math.random() * 2 - 1) * spread));
+  spawnItem(type, x, (140 + 190 * t) * (0.85 + Math.random() * 0.3));
+}
+function spawnGold() {
+  const side = Math.random() < 0.5 ? -1 : 1;
+  const x = Math.max(60, Math.min(WORLD_W - 60, dog.x + side * (500 + Math.random() * 400)));
+  spawnItem('gold', x, 55);
+  announceMsg = '✨ GOLDEN WATERMELON! ✨'; announceT = 2.5;
+  sfx.gold();
+}
+
+function addPopup(x, y, text, color, size) { popups.push({ x, y, text, color, t: 1, size: size || 20 }); }
+function addBurst(x, y, color, n, floaty) {
+  for (let i = 0; i < n; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 180,
+      vy: floaty ? -30 - Math.random() * 40 : -60 - Math.random() * 140,
+      t: 0.5 + Math.random() * 0.3,
+      grav: floaty ? 0 : 500,
+      color,
+    });
+  }
+}
+
+// ---------- eating ----------
+function eatItem(it, ix) {
+  const def = ITEM_TYPES[it.type];
+  const mult = multiplier();
+  const pts = def.pts * mult;
+  score += pts;
+  combo++;
+  if (combo % 5 === 0 && multiplier() > 1) {
+    addPopup(dog.x, GROUND_Y - 120, 'COMBO x' + multiplier() + '!', '#ffe066', 24);
+    sfx.combo(multiplier());
+  }
+  if (!zoomies) {
+    meter = Math.min(1, meter + def.meter);
+    if (meter >= 1) {
+      zoomies = 5; meter = 1;
+      announceMsg = '💨 ZOOMIES!!! 💨'; announceT = 1.6;
+      sfx.zoom();
+    }
+  }
+  dog.eatT = 0.42;
+  dog.eatColor = def.color;
+  eatFx.push({ spr: def.spr, x: ix, y: it.y, t: 0.13, dur: 0.13 });
+  addPopup(ix, GROUND_Y - 80, '+' + pts, def.color);
+  if (it.type === 'melon' || it.type === 'gold') {
+    dog.hopV = -180; // happy hop
+    addBurst(ix, GROUND_Y - 60, it.type === 'gold' ? '#ffd43b' : '#ff8fa3', 10, true);
+  }
+  sfx[it.type]();
+}
+
+// ---------- update ----------
+function update(dt) {
+  ambientT += dt;
+  // ambient life keeps moving on every screen
+  punts.forEach(p => {
+    p.x += p.dir * 18 * dt;
+    if (p.x > p.max) { p.x = p.max; p.dir = -1; }
+    if (p.x < p.min) { p.x = p.min; p.dir = 1; }
+  });
+  ducks.forEach(d => {
+    d.x += d.dir * d.sp * dt;
+    if (d.x > 1420) d.x = 0;
+    if (d.x < 0) d.x = 1420;
+  });
+  clouds.forEach(c => { c.x += 4 * c.s * dt; if (c.x > WORLD_W + 40) c.x = -80; });
+  if (overCooldown > 0) overCooldown -= dt;
+  if (announceT > 0) announceT -= dt;
+
+  // camera
+  if (state === 'title') {
+    const span = WORLD_W - W;
+    const ph = (ambientT * 26) % (span * 2);
+    camX = ph < span ? ph : span * 2 - ph;
+  } else {
+    const target = Math.max(0, Math.min(WORLD_W - W, dog.x - W / 2 + dog.facing * 40));
+    camX += (target - camX) * Math.min(1, dt * 6);
+  }
+
+  // popups + particles + eat fx always tick
+  for (let i = popups.length - 1; i >= 0; i--) {
+    const p = popups[i];
+    p.y -= 45 * dt; p.t -= dt * 1.1;
+    if (p.t <= 0) popups.splice(i, 1);
+  }
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.grav * dt; p.t -= dt;
+    if (p.t <= 0) particles.splice(i, 1);
+  }
+  for (let i = eatFx.length - 1; i >= 0; i--) {
+    const f = eatFx[i];
+    f.t -= dt;
+    if (f.t <= 0) eatFx.splice(i, 1);
+  }
+
+  if (state === 'dying') {
+    dyingT -= dt;
+    if (dyingT <= 0) finishGame('choc');
+    return;
+  }
+  if (state !== 'playing') return;
+
+  elapsed += dt;
+  if (elapsed >= DURATION) { finishGame('time'); return; }
+  const remaining = Math.ceil(DURATION - elapsed);
+  if (remaining <= 3 && remaining < lastTickSec) { sfx.tick(); lastTickSec = remaining; }
+
+  // golden watermelon events
+  if (goldIdx < goldTimes.length && elapsed >= goldTimes[goldIdx]) { spawnGold(); goldIdx++; }
+
+  // zoomies
+  if (zoomies > 0) {
+    zoomies -= dt;
+    meter = Math.max(0, zoomies / 5);
+    if (zoomies <= 0) { zoomies = 0; meter = 0; }
+    // rainbow trail
+    particles.push({
+      x: dog.x - dog.facing * 30 + (Math.random() - 0.5) * 20,
+      y: GROUND_Y - 20 - Math.random() * 35 + dog.hopY,
+      vx: -dog.facing * 40, vy: -20, grav: 0, t: 0.35,
+      color: 'hsl(' + Math.floor(ambientT * 400 % 360) + ',90%,65%)',
+    });
+  }
+
+  // movement
+  const maxSp = zoomies ? 660 : 420;
+  const accel = zoomies ? 3800 : 2400;
+  const left = keys['arrowleft'] || keys['a'], right = keys['arrowright'] || keys['d'];
+  if (touchTargetX !== null) {
+    dog.vx = Math.max(-maxSp - 40, Math.min(maxSp + 40, (touchTargetX - dog.x) * 10));
+  } else {
+    const dir = (right ? 1 : 0) - (left ? 1 : 0);
+    if (dir !== 0) dog.vx += dir * accel * dt;
+    else dog.vx *= Math.pow(0.0001, dt);
+    dog.vx = Math.max(-maxSp, Math.min(maxSp, dog.vx));
+  }
+  dog.x += dog.vx * dt;
+  dog.x = Math.max(40, Math.min(WORLD_W - 40, dog.x));
+  if (Math.abs(dog.vx) > 20) dog.facing = dog.vx > 0 ? 1 : -1;
+  dog.animT += dt * Math.min(Math.abs(dog.vx) / 120, 3);
+  // eat animation + chew crumbs
+  if (dog.eatT > 0) {
+    const before = dog.eatT;
+    dog.eatT -= dt;
+    for (const th of [0.28, 0.14]) {
+      if (before > th && dog.eatT <= th) {
+        addBurst(dog.x + dog.facing * 38, GROUND_Y - 38 + dog.hopY, dog.eatColor, 4);
+        sfx.chew();
+      }
+    }
+  }
+  // jump / happy-hop physics
+  if (dog.hopV !== 0 || dog.hopY < 0) {
+    const wasHigh = dog.hopY < -30;
+    dog.hopY += dog.hopV * dt;
+    dog.hopV += 1150 * dt;
+    if (dog.hopY >= 0) {
+      dog.hopY = 0; dog.hopV = 0;
+      if (wasHigh) { addBurst(dog.x, GROUND_Y - 4, '#9aa0ab', 6); sfx.land(); }
+    }
+  }
+
+  // spawning ramps up over the minute
+  spawnTimer -= dt;
+  if (spawnTimer <= 0) {
+    spawnRandomItem();
+    const t = Math.min(elapsed / DURATION, 1);
+    spawnTimer = (0.9 - 0.52 * t) * (0.8 + Math.random() * 0.4);
+  }
+
+  // pigeons: airborne food thieves
+  pigeonTimer -= dt;
+  if (pigeonTimer <= 0 && pigeons.length < 2) {
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    pigeons.push({
+      x: dir > 0 ? camX - 40 : camX + W + 40,
+      y: 130 + Math.random() * 240,
+      dir, sp: 130 + Math.random() * 70,
+      carrying: null, flapT: 0,
+    });
+    pigeonTimer = 6 + Math.random() * 5;
+  }
+  for (let i = pigeons.length - 1; i >= 0; i--) {
+    const pg = pigeons[i];
+    pg.x += pg.dir * pg.sp * dt;
+    pg.flapT += dt;
+    pg.y += Math.sin(pg.flapT * 6) * 12 * dt;
+    if (!pg.carrying) {
+      for (let j = items.length - 1; j >= 0; j--) {
+        const it = items[j];
+        if (it.grounded || (it.type !== 'kibble' && it.type !== 'treat')) continue;
+        const ix = it.x + Math.sin(it.sway) * 6;
+        if (Math.abs(ix - pg.x) < 22 && Math.abs(it.y - pg.y) < 22) {
+          pg.carrying = it.type;
+          items.splice(j, 1);
+          addPopup(ix, it.y, 'STOLEN!', '#c8d4cd', 16);
+          sfx.steal();
+          break;
+        }
+      }
+    }
+    if (pg.x < camX - 220 || pg.x > camX + W + 220) pigeons.splice(i, 1);
+  }
+
+  // items fall + collisions
+  const hb = { left: dog.x - 34, right: dog.x + 34, top: GROUND_Y - 58 + dog.hopY, bottom: GROUND_Y + 4 + dog.hopY };
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    const def = ITEM_TYPES[it.type];
+    const spr = def.spr;
+    if (!it.grounded) {
+      it.y += it.vy * dt;
+      it.sway += dt * 2.2;
+      // zoomies magnet pulls edibles in
+      if (zoomies > 0 && it.type !== 'choc' && it.y > 250) {
+        const dx = dog.x - it.x;
+        if (Math.abs(dx) < 170) it.x += Math.sign(dx) * Math.min(Math.abs(dx), 300 * dt);
+      }
+      // golden sparkle
+      if (it.type === 'gold' && Math.random() < 0.35) {
+        particles.push({ x: it.x + (Math.random() - 0.5) * 40, y: it.y + Math.random() * 30, vx: 0, vy: -25, grav: 0, t: 0.4, color: '#ffe066' });
+      }
+      if (it.y + spr.height >= 606) { // lands on the towpath
+        it.grounded = true;
+        it.y = 606 - spr.height;
+        it.groundT = 2.2;
+        addBurst(it.x, 600, '#9aa0ab', 4);
+      }
+    } else {
+      it.groundT -= dt;
+      if (it.groundT <= 0) {
+        if (it.type !== 'choc' && combo >= 5) {
+          addPopup(it.x, 560, 'COMBO LOST', '#8a94a0', 15);
+          sfx.lost();
+        }
+        if (it.type !== 'choc') combo = 0;
+        items.splice(i, 1);
+        continue;
+      }
+    }
+    const ix = it.grounded ? it.x : it.x + Math.sin(it.sway) * 6;
+    const hw = spr.width / 2;
+    if (it.y + spr.height > hb.top && it.y < hb.bottom && ix + hw > hb.left && ix - hw < hb.right) {
+      items.splice(i, 1);
+      if (it.type === 'choc') {
+        state = 'dying'; dyingT = 1.2;
+        sfx.choc();
+        addBurst(ix, GROUND_Y - 40, '#7048e8', 14);
+      } else {
+        eatItem(it, ix);
+      }
+    }
+  }
+}
+
+const RANKS = [
+  [400, 'GOOD GIRL'],
+  [1000, 'VERY GOOD GIRL'],
+  [2000, 'CHAMPION CHOMPER'],
+  [3500, 'QUEEN OF THE CAM'],
+  [Infinity, 'ABSOLUTE LEGEND'],
+];
+function rankFor(s) { for (const [max, name] of RANKS) if (s < max) return name; return RANKS[RANKS.length - 1][1]; }
+
+function finishGame(reason) {
+  gameOverReason = reason;
+  overCooldown = 0.8;
+  highScore = Math.max(highScore, score);
+  const qualifies = score > 0 && (board.length < 5 || score > board[board.length - 1].score);
+  if (qualifies) {
+    state = 'entername';
+    entrySlot = 0;
+  } else {
+    state = 'gameover';
+    newEntryIdx = -1;
+    saveBoard();
+  }
+  sfx.over();
+}
+function confirmName() {
+  const entry = { name: entryName.join(''), score };
+  board.push(entry);
+  board.sort((a, b) => b.score - a.score);
+  board = board.slice(0, 5);
+  newEntryIdx = board.indexOf(entry);
+  saveBoard();
+  overCooldown = 0.8;
+  state = 'gameover';
+  sfx.combo(3);
+}
+
+// ---------- render helpers ----------
+function drawPunt(g, p) {
+  const x = p.x, y = 432 + Math.sin(ambientT * 1.8 + p.x) * 2;
+  g.fillStyle = '#6e4a28'; g.fillRect(x, y, 64, 8);
+  g.fillStyle = '#8a6136'; g.fillRect(x, y, 64, 3);
+  g.fillStyle = '#31456e'; g.fillRect(x + 50, y - 16, 7, 16);
+  g.fillStyle = '#e8c49c'; g.fillRect(x + 51, y - 22, 6, 6);
+  g.fillStyle = '#e9d47f'; g.fillRect(x + 48, y - 23, 12, 2); g.fillRect(x + 51, y - 27, 6, 4);
+  g.strokeStyle = '#8a6136'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(x + 58, y - 24); g.lineTo(x + 66, y + 14); g.stroke();
+  g.fillStyle = '#7c3f52'; g.fillRect(x + 14, y - 8, 8, 8);
+  g.fillStyle = '#e8c49c'; g.fillRect(x + 15, y - 13, 6, 5);
+}
+function drawDuck(g, d) {
+  g.save(); g.translate(d.x, d.y + Math.sin(ambientT * 2 + d.x) * 1.5);
+  if (d.dir < 0) g.scale(-1, 1);
+  g.fillStyle = '#f4f1e6'; g.fillRect(-5, -3, 10, 5); g.fillRect(1, -8, 5, 6);
+  g.fillStyle = '#e8a33d'; g.fillRect(6, -6, 3, 2);
+  g.restore();
+}
+function drawCloud(g, c) {
+  g.fillStyle = 'rgba(238,242,245,0.92)';
+  g.fillRect(c.x, c.y + 8, 64 * c.s, 12);
+  g.fillRect(c.x + 10 * c.s, c.y, 30 * c.s, 10);
+  g.fillRect(c.x + 34 * c.s, c.y + 3, 22 * c.s, 8);
+}
+function drawPigeon(g, pg) {
+  const spr = (pg.flapT * 8 % 2 < 1) ? sprPigeonA : sprPigeonB;
+  g.save(); g.translate(pg.x, pg.y);
+  if (pg.dir < 0) g.scale(-1, 1);
+  g.drawImage(spr, -18, -12);
+  g.restore();
+  if (pg.carrying) {
+    const cs = ITEM_TYPES[pg.carrying].spr;
+    g.drawImage(cs, pg.x - cs.width / 2, pg.y + 12);
+  }
+}
+function drawDog(g) {
+  let spr = sprDogA;
+  if (state === 'dying') spr = sprDogChomp;
+  else if (dog.eatT > 0) {
+    const phase = 0.42 - dog.eatT;
+    spr = phase < 0.1 ? sprDogChomp : ((phase * 14 % 2 < 1) ? sprDogChew : sprDogA);
+  } else if (dog.hopY < -10) spr = sprDogB; // legs splayed mid-air
+  else if (Math.abs(dog.vx) > 20) spr = (dog.animT * 6 % 2 < 1) ? sprDogA : sprDogB;
+  g.save();
+  g.translate(dog.x, GROUND_Y + dog.hopY);
+  if (dog.facing < 0) g.scale(-1, 1);
+  g.drawImage(spr, -48, -64);
+  g.restore();
+  if (state === 'dying') {
+    g.fillStyle = '#e03131';
+    g.font = 'bold 30px "Courier New", monospace';
+    g.textAlign = 'center';
+    g.fillText('!', dog.x, GROUND_Y - 74);
+  }
+}
+
+function drawHUD(g) {
+  g.fillStyle = 'rgba(15,23,32,0.78)'; g.fillRect(0, 0, W, 66);
+  g.fillStyle = '#85b09a'; g.fillRect(0, 66, W, 3);
+  g.textBaseline = 'middle';
+  g.font = 'bold 17px "Courier New", monospace';
+  g.fillStyle = '#ffffff'; g.textAlign = 'left';
+  g.fillText('SCORE ' + score, 14, 20);
+  g.fillStyle = '#c8d4cd'; g.textAlign = 'right';
+  g.fillText('BEST ' + highScore, W - 14, 20);
+  const remaining = Math.max(0, Math.ceil(DURATION - elapsed));
+  g.textAlign = 'center';
+  g.font = 'bold 26px "Courier New", monospace';
+  g.fillStyle = remaining <= 10 ? (remaining % 2 === 0 ? '#ff6b6b' : '#ffd8d8') : '#ffe066';
+  g.fillText(String(remaining), W / 2, 22);
+  // row 2: combo + zoomies meter
+  g.font = 'bold 14px "Courier New", monospace';
+  g.textAlign = 'left';
+  const m = multiplier();
+  g.fillStyle = m > 1 ? '#ffe066' : '#8a94a0';
+  g.fillText('COMBO ' + combo + '  x' + m, 14, 50);
+  g.fillStyle = '#8a94a0';
+  g.fillText('ZOOMIES', 210, 50);
+  g.strokeStyle = '#8a94a0'; g.lineWidth = 2;
+  g.strokeRect(292, 42, 172, 16);
+  if (meter > 0) {
+    g.fillStyle = zoomies > 0
+      ? 'hsl(' + Math.floor(ambientT * 400 % 360) + ',90%,60%)'
+      : '#ff8fa3';
+    g.fillRect(294, 44, Math.round(168 * meter), 12);
+  }
+  g.textBaseline = 'alphabetic';
+}
+
+// edge arrows for off-screen watermelons
+function drawArrows(g) {
+  items.forEach(it => {
+    if (it.type !== 'melon' && it.type !== 'gold') return;
+    const color = it.type === 'gold' ? '#ffd43b' : '#ff5f6d';
+    const y = Math.max(90, Math.min(590, it.y + 20));
+    let ax = null, dir = 0;
+    if (it.x < camX - 10) { ax = 16; dir = -1; }
+    else if (it.x > camX + W + 10) { ax = W - 16; dir = 1; }
+    if (ax === null) return;
+    const pulse = 0.7 + 0.3 * Math.sin(ambientT * 8);
+    g.globalAlpha = pulse;
+    g.fillStyle = color;
+    g.beginPath();
+    g.moveTo(ax + dir * 12, y);
+    g.lineTo(ax - dir * 6, y - 11);
+    g.lineTo(ax - dir * 6, y + 11);
+    g.closePath(); g.fill();
+    g.globalAlpha = 1;
+  });
+}
+
+function drawTitle(g) {
+  g.fillStyle = 'rgba(10,16,24,0.82)'; g.fillRect(0, 0, W, H);
+  g.textAlign = 'center';
+  g.fillStyle = '#85b09a';
+  g.font = 'bold 28px "Courier New", monospace';
+  g.fillText("BIRDIE'S", W / 2, 70);
+  g.fillStyle = '#ff5f6d';
+  g.font = 'bold 32px "Courier New", monospace';
+  g.fillText('WATERMELON FEAST', W / 2, 106);
+  g.fillStyle = '#9fb2c8';
+  g.font = '14px "Courier New", monospace';
+  g.fillText('60 seconds. All of Cambridge. One hungry dog.', W / 2, 132);
+
+  const s = 6;
+  g.save();
+  g.translate(W / 2 - (24 * s) / 2, 148);
+  g.scale(s / 4, s / 4);
+  g.drawImage(sprDogTitle, 0, 0);
+  g.restore();
+
+  g.fillStyle = '#e8ecef';
+  drawLegendRow(g, sprKibble, 'Kibble ......  +10', 290);
+  drawLegendRow(g, sprBone, 'Treat .......  +25', 322);
+  drawLegendRow(g, sprMelon, 'Watermelon .. +100', 358);
+  g.fillStyle = '#ffd43b';
+  drawLegendRow(g, sprGold, 'Golden ...... +250', 398);
+  g.fillStyle = '#ff8787';
+  drawLegendRow(g, sprChoc, 'Chocolate ... NO!!', 440);
+
+  g.textAlign = 'center';
+  g.fillStyle = '#9fb2c8';
+  g.font = '13px "Courier New", monospace';
+  g.fillText('Chain catches to build your combo multiplier.', W / 2, 478);
+  g.fillText('Fill the bar for ZOOMIES. Beware thieving pigeons!', W / 2, 496);
+  g.fillText('← → run  •  SPACE/W jump chocolate  •  touch: drag + JUMP', W / 2, 522);
+  g.globalAlpha = 0.6 + 0.4 * Math.sin(ambientT * 4);
+  g.fillStyle = '#ffe066';
+  g.font = 'bold 20px "Courier New", monospace';
+  g.fillText('PRESS SPACE OR TAP TO START', W / 2, 560);
+  g.globalAlpha = 1;
+
+  // little leaderboard teaser
+  if (board.length) {
+    g.fillStyle = '#8a94a0';
+    g.font = '13px "Courier New", monospace';
+    g.fillText('TOP DOG: ' + board[0].name + ' ' + board[0].score, W / 2, 592);
+  }
+}
+function drawLegendRow(g, spr, label, y) {
+  g.drawImage(spr, W / 2 - 92 - spr.width / 2, y - spr.height / 2);
+  g.textAlign = 'left';
+  g.font = 'bold 16px "Courier New", monospace';
+  g.fillText(label, W / 2 - 58, y + 5);
+}
+
+function drawEnterName(g) {
+  g.fillStyle = 'rgba(10,16,24,0.88)'; g.fillRect(0, 0, W, H);
+  g.textAlign = 'center';
+  g.globalAlpha = 0.7 + 0.3 * Math.sin(ambientT * 6);
+  g.fillStyle = '#ffe066';
+  g.font = 'bold 26px "Courier New", monospace';
+  g.fillText('★ TOP 5 SCORE! ★', W / 2, 100);
+  g.globalAlpha = 1;
+  g.fillStyle = '#ffffff';
+  g.font = 'bold 30px "Courier New", monospace';
+  g.fillText(String(score), W / 2, 145);
+  g.fillStyle = '#9fb2c8';
+  g.font = '14px "Courier New", monospace';
+  g.fillText('ENTER YOUR INITIALS', W / 2, 180);
+
+  for (let i = 0; i < 3; i++) {
+    const sx = nameSlotX(i);
+    const active = i === entrySlot;
+    // arrows
+    g.fillStyle = active ? '#ffe066' : '#5a6470';
+    g.beginPath(); g.moveTo(sx, 224); g.lineTo(sx - 16, 250); g.lineTo(sx + 16, 250); g.closePath(); g.fill();
+    g.beginPath(); g.moveTo(sx, 374); g.lineTo(sx - 16, 348); g.lineTo(sx + 16, 348); g.closePath(); g.fill();
+    // letter box
+    g.strokeStyle = active ? '#ffe066' : '#5a6470'; g.lineWidth = 3;
+    g.strokeRect(sx - 28, 264, 56, 72);
+    g.fillStyle = active ? '#ffffff' : '#c8d4cd';
+    g.font = 'bold 48px "Courier New", monospace';
+    g.fillText(entryName[i], sx, 318);
+  }
+  // OK button
+  g.strokeStyle = '#85b09a'; g.lineWidth = 3;
+  g.strokeRect(W / 2 - 80, 424, 160, 46);
+  g.fillStyle = '#85b09a';
+  g.font = 'bold 24px "Courier New", monospace';
+  g.fillText('OK', W / 2, 456);
+  g.fillStyle = '#8a94a0';
+  g.font = '13px "Courier New", monospace';
+  g.fillText('type letters, or tap the arrows', W / 2, 510);
+}
+
+function drawGameOver(g) {
+  g.fillStyle = 'rgba(10,16,24,0.87)'; g.fillRect(0, 0, W, H);
+  g.textAlign = 'center';
+  if (gameOverReason === 'choc') {
+    g.drawImage(sprChoc, W / 2 - sprChoc.width / 2, 72);
+    g.fillStyle = '#ff6b6b';
+    g.font = 'bold 26px "Courier New", monospace';
+    g.fillText('NO CHOCOLATE FOR DOGS!', W / 2, 140);
+    g.fillStyle = '#9fb2c8';
+    g.font = '13px "Courier New", monospace';
+    g.fillText('Chocolate is toxic to dogs. Birdie is fine —', W / 2, 164);
+    g.fillText('but the game is over!', W / 2, 180);
+  } else {
+    g.fillStyle = '#85b09a';
+    g.font = 'bold 32px "Courier New", monospace';
+    g.fillText("TIME'S UP!", W / 2, 120);
+    g.fillStyle = '#9fb2c8';
+    g.font = '14px "Courier New", monospace';
+    g.fillText('Birdie is stuffed and very happy.', W / 2, 150);
+  }
+  g.fillStyle = '#ffffff';
+  g.font = 'bold 28px "Courier New", monospace';
+  g.fillText('SCORE  ' + score, W / 2, 230);
+  g.fillStyle = '#ffd43b';
+  g.font = 'bold 18px "Courier New", monospace';
+  g.fillText('RANK: ' + rankFor(score), W / 2, 262);
+
+  // leaderboard
+  g.fillStyle = '#85b09a';
+  g.font = 'bold 16px "Courier New", monospace';
+  g.fillText('— TOP DOGS —', W / 2, 320);
+  g.font = 'bold 18px "Courier New", monospace';
+  for (let i = 0; i < 5; i++) {
+    const y = 352 + i * 28;
+    if (i < board.length) {
+      const hl = i === newEntryIdx;
+      if (hl) {
+        g.globalAlpha = 0.75 + 0.25 * Math.sin(ambientT * 6);
+        g.fillStyle = '#ffe066';
+      } else g.fillStyle = '#c8d4cd';
+      g.textAlign = 'left';
+      g.fillText((i + 1) + '. ' + board[i].name, W / 2 - 100, y);
+      g.textAlign = 'right';
+      g.fillText(String(board[i].score), W / 2 + 100, y);
+      g.globalAlpha = 1;
+    } else {
+      g.fillStyle = '#4a5560';
+      g.textAlign = 'left'; g.fillText((i + 1) + '. ---', W / 2 - 100, y);
+      g.textAlign = 'right'; g.fillText('-', W / 2 + 100, y);
+    }
+  }
+  g.textAlign = 'center';
+  g.globalAlpha = 0.6 + 0.4 * Math.sin(ambientT * 4);
+  g.fillStyle = '#ffe066';
+  g.font = 'bold 20px "Courier New", monospace';
+  g.fillText('SPACE OR TAP TO PLAY AGAIN', W / 2, 560);
+  g.globalAlpha = 1;
+}
+
+function render() {
+  // world layer
+  ctx.save();
+  ctx.translate(-Math.round(camX), 0);
+  ctx.drawImage(bgCanvas, 0, 0);
+  clouds.forEach(c => drawCloud(ctx, c));
+  punts.forEach(p => drawPunt(ctx, p));
+  ducks.forEach(d => drawDuck(ctx, d));
+
+  items.forEach(it => {
+    const spr = ITEM_TYPES[it.type].spr;
+    const ix = it.grounded ? it.x : it.x + Math.sin(it.sway) * 6;
+    if (it.grounded && it.groundT < 0.9) ctx.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(it.groundT * 12));
+    ctx.drawImage(spr, Math.round(ix - spr.width / 2), Math.round(it.y));
+    ctx.globalAlpha = 1;
+  });
+
+  // caught food shrinking into Birdie's mouth
+  eatFx.forEach(f => {
+    const k = Math.max(f.t / f.dur, 0);
+    const mx = dog.x + dog.facing * 40, my = GROUND_Y - 42 + dog.hopY;
+    const x = mx + (f.x - mx) * k, y = my + (f.y - my) * k;
+    const sc = 0.3 + 0.7 * k;
+    ctx.drawImage(f.spr, x - f.spr.width * sc / 2, y - f.spr.height * sc / 2, f.spr.width * sc, f.spr.height * sc);
+  });
+
+  pigeons.forEach(pg => drawPigeon(ctx, pg));
+  drawDog(ctx);
+
+  particles.forEach(p => {
+    ctx.globalAlpha = Math.max(p.t, 0);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(Math.round(p.x), Math.round(p.y), 5, 5);
+  });
+  ctx.globalAlpha = 1;
+  popups.forEach(p => {
+    ctx.globalAlpha = Math.max(p.t, 0);
+    ctx.fillStyle = p.color;
+    ctx.font = 'bold ' + p.size + 'px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(p.text, p.x, p.y);
+  });
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // screen layer
+  if (state === 'playing' || state === 'dying') {
+    drawHUD(ctx);
+    drawArrows(ctx);
+    // JUMP button (mainly for touch; Space/W/Up on keyboard)
+    ctx.fillStyle = 'rgba(15,23,32,0.6)';
+    ctx.fillRect(JUMP_BTN.x, JUMP_BTN.y, JUMP_BTN.w, JUMP_BTN.h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2;
+    ctx.strokeRect(JUMP_BTN.x, JUMP_BTN.y, JUMP_BTN.w, JUMP_BTN.h);
+    ctx.fillStyle = dog.hopY < 0 ? '#ffe066' : '#e8ecef';
+    ctx.font = 'bold 17px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('JUMP ⇧', JUMP_BTN.x + JUMP_BTN.w / 2, JUMP_BTN.y + 32);
+  }
+  if (announceT > 0) {
+    ctx.globalAlpha = Math.min(1, announceT);
+    ctx.fillStyle = '#ffe066';
+    ctx.font = 'bold 24px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(announceMsg, W / 2, 120);
+    ctx.globalAlpha = 1;
+  }
+  if (state === 'dying') {
+    ctx.fillStyle = 'rgba(224,49,49,' + (0.25 + 0.2 * Math.sin(ambientT * 20)) + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+  if (state === 'title') drawTitle(ctx);
+  if (state === 'entername') drawEnterName(ctx);
+  if (state === 'gameover') drawGameOver(ctx);
+}
+
+// ---------- main loop ----------
+let last = 0;
+function frame(ts) {
+  const dt = Math.min((ts - last) / 1000, 0.05);
+  last = ts;
+  update(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
